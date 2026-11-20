@@ -1,0 +1,417 @@
+===== Step 1: Stage 1 – Install tools (apt update)
+[Terminal 1]
+$ sudo apt update
+Hit:1 http://archive.ubuntu.com/ubuntu stonking InRelease
+Hit:2 http://archive.ubuntu.com/ubuntu stonking-updates InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu stonking-backports InRelease
+Hit:4 http://security.ubuntu.com/ubuntu stonking-security InRelease
+Reading package lists...
+
+===== Step 2: Stage 1 – Install tools (apt install)
+[Terminal 1]
+$ sudo apt install -y tshark iperf3 mtr-tiny iproute2 wireshark netcat-openbsd
+Setting up libglycin-2-0:arm64 (2.2.1+ds-1ubuntu2) ...
+Setting up libqt6printsupport6:arm64 (6.11.2+dfsg-4ubuntu2) ...
+Setting up libqt6waylandcompositor6:arm64 (6.11.2-1) ...
+Setting up libavformat62:arm64 (7:8.1.2-2ubuntu2) ...
+Setting up glycin-thumbnailers (2.2.1+ds-1ubuntu2) ...
+Setting up libgdk-pixbuf-2.0-0:arm64 (2.44.8+dfsg-1) ...
+Setting up qt6-wayland:arm64 (6.11.2-1) ...
+Setting up gtk-update-icon-cache (4.24.1+ds-1) ...
+Setting up libqt6multimedia6:arm64 (6.11.2-2) ...
+Setting up wireshark (4.6.6-2build1) ...
+Setting up adwaita-icon-theme (51.0-1) ...
+update-alternatives: using /usr/share/icons/Adwaita/cursor.theme to provide /usr/share/icons/default/index.theme (x-cursor-theme) in auto mode
+Setting up libgtk-3-0t64:arm64 (3.24.52-0ubuntu1) ...
+Setting up librsvg2-common:arm64 (2.62.1+dfsg-1ubuntu1) ...
+Setting up libgtk-3-bin (3.24.52-0ubuntu1) ...
+Setting up qt6-gtk-platformtheme:arm64 (6.11.2+dfsg-4ubuntu2) ...
+Processing triggers for libc-bin (2.44-1ubuntu2) ...
+Processing triggers for libgdk-pixbuf-2.0-0:arm64 (2.44.8+dfsg-1) ...
+
+Running kernel seems to be up-to-date (ABI upgrades are not detected).
+
+Restarting services...
+ /etc/needrestart/restart.d/systemd-manager
+ /etc/needrestart/restart.d/systemd-user
+ systemctl restart cron.service multipathd.service polkit.service systemd-journald.service systemd-networkd.service systemd-resolved.service systemd-udevd.service udisks2.service
+
+Service restarts being deferred:
+ systemctl restart ModemManager.service
+ /etc/needrestart/restart.d/dbus-broker.service
+ systemctl restart networkd-dispatcher.service
+ systemctl restart systemd-logind.service
+ systemctl restart unattended-upgrades.service
+
+No containers need to be restarted.
+
+User sessions running outdated binaries:
+ divyasaisomana @ session #6: bash[8859], sshd-session[2222]
+ divyasaisomana @ user manager: (sd-pam)[1963]
+
+No VM guests are running outdated hypervisor (qemu) binaries on this host.
+
+===== Step 3: Stage 1 – Verify the tools are installed
+[Terminal 1]
+$ tshark --version | head -1; iperf3 --version | head -1; mtr --version; nc -h 2>&1 | head -1
+TShark (Wireshark) 4.6.6.
+iperf 3.20 (cJSON 1.7.15)
+mtr 0.96
+OpenBSD netcat (Debian patchlevel 1.238-1)
+
+===== Step 4: Stage 2 – Create three network namespaces (host1, router, host2)
+[Terminal 1]
+$ sudo ip netns add host1; sudo ip netns add router; sudo ip netns add host2
+done
+
+===== Step 5: Stage 2 – Verify namespaces
+[Terminal 1]
+$ sudo ip netns list
+host2
+router
+host1
+
+===== Step 6: Stage 2 – Create virtual cables (veth pairs)
+[Terminal 1]
+$ sudo ip link add veth-h1 type veth peer name veth-r1; sudo ip link add veth-r2 type veth peer name veth-h2; echo done
+done
+
+===== Step 7: Stage 2 – Plug cables into the namespaces
+[Terminal 1]
+$ sudo ip link set veth-h1 netns host1; sudo ip link set veth-r1 netns router; sudo ip link set veth-r2 netns router; sudo ip link set veth-h2 netns host2; echo done
+done
+
+===== Step 8: Stage 3 – Configure IP addresses on host1
+[Terminal 1]
+$ sudo ip netns exec host1 ip addr add 10.0.1.1/30 dev veth-h1; sudo ip netns exec host1 ip link set veth-h1 up; sudo ip netns exec host1 ip link set lo up; sudo ip netns exec host1 ip -br addr
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+veth-h1@if4      LOWERLAYERDOWN 10.0.1.1/30
+
+===== Step 9: Stage 3 – Configure IP addresses on router
+[Terminal 1]
+$ sudo ip netns exec router ip addr add 10.0.1.2/30 dev veth-r1; sudo ip netns exec router ip addr add 10.0.2.1/30 dev veth-r2; sudo ip netns exec router ip link set veth-r1 up; sudo ip netns exec router ip link set veth-r2 up; sudo ip netns exec router ip link set lo up; sudo ip netns exec router ip -br addr
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+veth-r1@if5      UP             10.0.1.2/30 fe80::4ce1:1bff:fe35:da19/64 
+veth-r2@if6      LOWERLAYERDOWN 10.0.2.1/30
+
+===== Step 10: Stage 3 – Configure IP addresses on host2
+[Terminal 1]
+$ sudo ip netns exec host2 ip addr add 10.0.2.2/30 dev veth-h2; sudo ip netns exec host2 ip link set veth-h2 up; sudo ip netns exec host2 ip link set lo up; sudo ip netns exec host2 ip -br addr
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+veth-h2@if7      UP             10.0.2.2/30 fe80::18cd:7eff:fe65:cee5/64
+
+===== Step 11: Stage 4 – Enable routing
+[Terminal 1]
+$ sudo ip netns exec router sysctl -w net.ipv4.ip_forward=1; sudo ip netns exec host1 ip route add 10.0.2.0/30 via 10.0.1.2; sudo ip netns exec host2 ip route add 10.0.1.0/30 via 10.0.2.1; sudo ip netns exec host1 ip route; sudo ip netns exec host2 ip route
+net.ipv4.ip_forward = 1
+10.0.1.0/30 dev veth-h1 proto kernel scope link src 10.0.1.1 
+10.0.2.0/30 via 10.0.1.2 dev veth-h1 
+10.0.1.0/30 via 10.0.2.1 dev veth-h2 
+10.0.2.0/30 dev veth-h2 proto kernel scope link src 10.0.2.2
+
+===== Step 12: Stage 5 – Test connectivity (host1 to host2)
+[Terminal 1]
+$ sudo ip netns exec host1 ping -c 3 10.0.2.2
+PING 10.0.2.2 (10.0.2.2) 56(84) bytes of data.
+64 bytes from 10.0.2.2: icmp_seq=1 ttl=63 time=0.950 ms
+64 bytes from 10.0.2.2: icmp_seq=2 ttl=63 time=0.352 ms
+64 bytes from 10.0.2.2: icmp_seq=3 ttl=63 time=0.244 ms
+
+--- 10.0.2.2 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2088ms
+rtt min/avg/max/mdev = 0.244/0.515/0.950/0.310 ms
+
+===== Step 13: Stage 6 – Add 20 ms delay and 1% loss on router veth-r2
+[Terminal 1]
+$ sudo ip netns exec router tc qdisc add dev veth-r2 root netem delay 20ms loss 1%
+netem added OK
+
+===== Step 14: Stage 6 – Verify the netem rule
+[Terminal 1]
+$ sudo ip netns exec router tc qdisc show dev veth-r2
+qdisc netem 8001: root refcnt 5 limit 1000 delay 20ms loss 1% seed 17433962229944636603
+
+===== Step 15: Stage 8 – Start capture at host1 (cap1.pcap)
+[Terminal 1]
+$ sudo ip netns exec host1 tshark -i veth-h1 -w /tmp/cap1.pcap
+Running as user "root" and group "root". This could be dangerous.
+Capturing on 'veth-h1'
+
+===== Step 16: Stage 8 – Start capture at router (cap2.pcap)
+[Terminal 2]
+$ sudo ip netns exec router tshark -i veth-r1 -w /tmp/cap2.pcap
+Running as user "root" and group "root". This could be dangerous.
+Capturing on 'veth-r1'
+
+===== Step 17: Stage 8 – Start capture at host2 (cap3.pcap)
+[Terminal 3]
+$ sudo ip netns exec host2 tshark -i veth-h2 -w /tmp/cap3.pcap
+Running as user "root" and group "root". This could be dangerous.
+Capturing on 'veth-h2'
+
+===== Step 18: Stage 9 – Start the receiver on host2 (listening on port 1234)
+[Terminal 4]
+$ sudo ip netns exec host2 nc -l 1234
+
+
+===== Step 19: Stage 9 – Connect from host1 and type the messages (Terminal 5)
+[Terminal 5]
+$ sudo ip netns exec host1 nc 10.0.2.2 1234
+Hello from host1!
+This is Alekhya
+Computer Networks Lab
+Three Point Capture Experiment
+Message traveling through router
+
+===== Step 20: Stage 10 – Receiver (host2) shows the messages arriving
+[Terminal 4]
+$ sudo ip netns exec host2 nc -l 1234
+Hello from host1!
+This is Alekhya
+Computer Networks Lab
+Three Point Capture Experiment
+Message traveling through router
+
+===== Step 21: Stage 10/11 – Capture counts at host1 (Ctrl+C pressed)
+[Terminal 1]
+$ sudo ip netns exec host1 tshark -i veth-h1 -w /tmp/cap1.pcap
+Running as user "root" and group "root". This could be dangerous.
+Capturing on 'veth-h1'
+18 packets captured
+
+===== Step 22: Stage 10/11 – Capture counts at router (Ctrl+C pressed)
+[Terminal 2]
+$ sudo ip netns exec router tshark -i veth-r1 -w /tmp/cap2.pcap
+Running as user "root" and group "root". This could be dangerous.
+Capturing on 'veth-r1'
+18 packets captured
+
+===== Step 23: Stage 10/11 – Capture counts at host2 (Ctrl+C pressed)
+[Terminal 3]
+$ sudo ip netns exec host2 tshark -i veth-h2 -w /tmp/cap3.pcap
+Running as user "root" and group "root". This could be dangerous.
+Capturing on 'veth-h2'
+17 packets captured
+
+===== Step 24: Stage 12 – Fix permissions on the capture files
+[Terminal 4]
+$ sudo chmod 644 /tmp/cap1.pcap /tmp/cap2.pcap /tmp/cap3.pcap; ls -l /tmp/cap1.pcap /tmp/cap2.pcap /tmp/cap3.pcap
+-rw-r--r-- 1 divyasaisomana root 2212 Nov 19 14:51 /tmp/cap1.pcap
+-rw-r--r-- 1 divyasaisomana root 2212 Nov 19 14:51 /tmp/cap2.pcap
+-rw-r--r-- 1 divyasaisomana root 2112 Nov 19 14:51 /tmp/cap3.pcap
+
+===== Step 25: Stage 12 (extra) – Give the capture files to the current user
+[Terminal 4]
+$ sudo chown $USER /tmp/cap1.pcap /tmp/cap2.pcap /tmp/cap3.pcap; ls -l /tmp/cap1.pcap /tmp/cap2.pcap /tmp/cap3.pcap
+-rw-r--r-- 1 divyasaisomana root 2212 Nov 19 14:51 /tmp/cap1.pcap
+-rw-r--r-- 1 divyasaisomana root 2212 Nov 19 14:51 /tmp/cap2.pcap
+-rw-r--r-- 1 divyasaisomana root 2112 Nov 19 14:51 /tmp/cap3.pcap
+
+===== Step 26: Check the capture files are not empty
+[Terminal 4]
+$ ls -lh /tmp/cap1.pcap /tmp/cap2.pcap /tmp/cap3.pcap
+-rw-r--r-- 1 divyasaisomana root 2.2K Nov 19 14:51 /tmp/cap1.pcap
+-rw-r--r-- 1 divyasaisomana root 2.2K Nov 19 14:51 /tmp/cap2.pcap
+-rw-r--r-- 1 divyasaisomana root 2.1K Nov 19 14:51 /tmp/cap3.pcap
+
+===== Step 27: Stage 13 – Check TTL at point 1 (host1, cap1)
+[Terminal 4]
+$ tshark -r /tmp/cap1.pcap -T fields -e ip.ttl -Y "ip" 2>/dev/null | sort | uniq -c
+      7 63
+      9 64
+
+===== Step 28: Stage 13 – Check TTL at point 2 (router, cap2)
+[Terminal 4]
+$ tshark -r /tmp/cap2.pcap -T fields -e ip.ttl -Y "ip" 2>/dev/null | sort | uniq -c
+      7 63
+      9 64
+
+===== Step 29: Stage 13 – Check TTL at point 3 (host2, cap3)
+[Terminal 4]
+$ tshark -r /tmp/cap3.pcap -T fields -e ip.ttl -Y "ip" 2>/dev/null | sort | uniq -c
+      8 63
+      7 64
+
+===== Step 30: Stage 14 – Read the actual message from the router capture (data.text)
+[Terminal 4]
+$ tshark -r /tmp/cap2.pcap -Y "tcp.port == 1234" -T fields -e data.text 2>/dev/null
+
+
+===== Step 31: Read message as hex/ASCII from the router capture (xxd)
+[Terminal 4]
+$ tshark -r /tmp/cap2.pcap -Y "tcp.port == 1234" -T fields -e tcp.payload 2>/dev/null | xxd | head -20
+00000000: 0a0a 0a34 3836 3536 6336 6336 6632 3036  ...48656c6c6f206
+00000010: 3637 3236 6636 6432 3036 3836 6637 3337  6726f6d20686f737
+00000020: 3433 3132 3130 610a 0a35 3436 3836 3937  431210a..5468697
+00000030: 3332 3036 3937 3332 3034 3136 6336 3536  320697320416c656
+00000040: 6236 3837 3936 3130 610a 0a34 3336 6636  b6879610a..436f6
+00000050: 6437 3037 3537 3436 3537 3232 3034 6536  d7075746572204e6
+00000060: 3537 3437 3736 6637 3236 6237 3332 3034  574776f726b73204
+00000070: 6336 3136 3230 610a 0a35 3436 3837 3236  c61620a..5468726
+00000080: 3536 3532 3035 3036 6636 3936 6537 3432  56520506f696e742
+00000090: 3034 3336 3137 3037 3437 3537 3236 3532  0436170747572652
+000000a0: 3034 3537 3837 3036 3537 3236 3936 6436  04578706572696d6
+000000b0: 3536 6537 3430 610a 0a34 6436 3537 3337  56e740a..4d65737
+000000c0: 3336 3136 3736 3532 3037 3437 3236 3137  3616765207472617
+000000d0: 3636 3536 6336 3936 6536 3732 3037 3436  6656c696e6720746
+000000e0: 3837 3236 6637 3536 3736 3832 3037 3236  8726f75676820726
+000000f0: 6637 3537 3436 3537 3230 610a 0a0a 0a0a  f757465720a.....
+
+===== Step 32: Check delay – SYN time in cap1 (host1)
+[Terminal 4]
+$ tshark -r /tmp/cap1.pcap -Y "tcp.flags.syn==1 && tcp.flags.ack==0" -T fields -e frame.time_relative 2>/dev/null
+0.000000000
+
+===== Step 33: Check delay – SYN time in cap2 (router)
+[Terminal 4]
+$ tshark -r /tmp/cap2.pcap -Y "tcp.flags.syn==1 && tcp.flags.ack==0" -T fields -e frame.time_relative 2>/dev/null
+0.000000000
+
+===== Step 34: Check delay – SYN time in cap3 (host2)
+[Terminal 4]
+$ tshark -r /tmp/cap3.pcap -Y "tcp.flags.syn==1 && tcp.flags.ack==0" -T fields -e frame.time_relative 2>/dev/null
+0.000000000
+
+===== Step 35: Check delay using absolute (epoch) timestamps – cap1 vs cap3
+[Terminal 4]
+$ for c in 1 2 3; do printf "cap$c SYN epoch time: "; tshark -r /tmp/cap$c.pcap -Y "tcp.flags.syn==1 && tcp.flags.ack==0" -T fields -e frame.time_epoch 2>/dev/null; done
+cap1 SYN epoch time: 1795080100.354231611
+cap2 SYN epoch time: 1795080100.354249026
+cap3 SYN epoch time: 1795080100.374382231
+
+===== Step 36: Check delay – difference cap3 − cap1 in milliseconds
+[Terminal 4]
+$ a=$(tshark -r /tmp/cap1.pcap -Y "tcp.flags.syn==1 && tcp.flags.ack==0" -T fields -e frame.time_epoch 2>/dev/null); b=$(tshark -r /tmp/cap3.pcap -Y "tcp.flags.syn==1 && tcp.flags.ack==0" -T fields -e frame.time_epoch 2>/dev/null); echo "cap1 = $a"; echo "cap3 = $b"; python3 -c "print('difference =', round((float('$b')-float('$a'))*1000,2), 'ms')"
+cap1 = 1795080100.354231611
+cap3 = 1795080100.374382231
+difference = 20.15 ms
+
+===== Step 37: Check retransmissions in cap1
+[Terminal 4]
+$ tshark -r /tmp/cap1.pcap -Y "tcp.analysis.retransmission" 2>/dev/null | wc -l
+0
+
+===== Step 38: Check retransmissions in cap2
+[Terminal 4]
+$ tshark -r /tmp/cap2.pcap -Y "tcp.analysis.retransmission" 2>/dev/null | wc -l
+0
+
+===== Step 39: Check retransmissions in cap3
+[Terminal 4]
+$ tshark -r /tmp/cap3.pcap -Y "tcp.analysis.retransmission" 2>/dev/null | wc -l
+0
+
+===== Step 40: Check RTT with mtr
+[Terminal 4]
+$ sudo ip netns exec host1 mtr --report 10.0.2.2
+Start: 2026-11-19T14:52:56+0530
+HOST: lima-cnnp                   Loss%   Snt   Last   Avg  Best  Wrst StDev
+  1.|-- 10.0.1.2                   0.0%    10    0.4   0.8   0.2   3.6   1.0
+  2.|-- 10.0.2.2                   0.0%    10   24.7  23.5  21.2  28.1   2.1
+
+===== Step 41: Read message text from the router capture – decoded payload (extra)
+[Terminal 4]
+$ tshark -r /tmp/cap2.pcap -Y "tcp.port == 1234 && tcp.len > 0" -T fields -e tcp.payload 2>/dev/null | xxd -r -p
+Hello from host1!
+This is Alekhya
+Computer Networks Lab
+Three Point Capture Experiment
+Message traveling through router
+
+===== Step 42: Wireshark step – filter tcp.port == 1234 and expand one packet (tshark -V equivalent)
+[Terminal 4]
+$ tshark -r /tmp/cap2.pcap -Y "tcp.port == 1234 && tcp.len > 0" -V 2>/dev/null | grep -E "^Frame [0-9]|Ethernet II|Internet Protocol|Time to Live|Transmission Control|Data|Hello" | head -12
+Frame 4: Packet, 84 bytes on wire (672 bits), 84 bytes captured (672 bits) on interface veth-r1, id 0
+Ethernet II, Src: f6:df:81:a5:a5:c3 (f6:df:81:a5:a5:c3), Dst: 4e:e1:1b:35:da:19 (4e:e1:1b:35:da:19)
+Internet Protocol Version 4, Src: 10.0.1.1, Dst: 10.0.2.2
+    Time to Live: 64
+Transmission Control Protocol, Src Port: 53720, Dst Port: 1234, Seq: 1, Ack: 1, Len: 18
+        .... 0... = Data: Absent
+Data (18 bytes)
+0000  48 65 6c 6c 6f 20 66 72 6f 6d 20 68 6f 73 74 31   Hello from host1
+    Data: 48656c6c6f2066726f6d20686f737431210a
+Frame 6: Packet, 82 bytes on wire (656 bits), 82 bytes captured (656 bits) on interface veth-r1, id 0
+Ethernet II, Src: f6:df:81:a5:a5:c3 (f6:df:81:a5:a5:c3), Dst: 4e:e1:1b:35:da:19 (4e:e1:1b:35:da:19)
+Internet Protocol Version 4, Src: 10.0.1.1, Dst: 10.0.2.2
+
+===== Step 43: Wireshark step – merge all 3 captures (File > Merge equivalent)
+[Terminal 4]
+$ mergecap -w /tmp/merged.pcap /tmp/cap1.pcap /tmp/cap2.pcap /tmp/cap3.pcap; capinfos -c /tmp/merged.pcap
+File name:           /tmp/merged.pcap
+Number of packets:   53
+
+===== Step 44: Wireshark step – TTL column (Custom column ip.ttl) for the message packets
+[Terminal 4]
+$ tshark -r /tmp/merged.pcap -Y "tcp.port == 1234" -T fields -e frame.number -e frame.time_epoch -e ip.src -e ip.dst -e ip.ttl -e tcp.flags.str -e tcp.len 2>/dev/null | sort -k2 | head -40
+1	1795080100.354231611	10.0.1.1	10.0.2.2	64	··········S·	0
+2	1795080100.354249026	10.0.1.1	10.0.2.2	64	··········S·	0
+3	1795080100.374382231	10.0.1.1	10.0.2.2	63	··········S·	0
+4	1795080100.375022154	10.0.2.2	10.0.1.1	64	·······A··S·	0
+5	1795080100.375029945	10.0.2.2	10.0.1.1	63	·······A··S·	0
+6	1795080100.375031486	10.0.2.2	10.0.1.1	63	·······A··S·	0
+7	1795080100.375055068	10.0.1.1	10.0.2.2	64	·······A····	0
+8	1795080100.375056277	10.0.1.1	10.0.2.2	64	·······A····	0
+9	1795080100.375139647	10.0.1.1	10.0.2.2	64	·······AP···	18
+10	1795080100.375141064	10.0.1.1	10.0.2.2	64	·······AP···	18
+11	1795080100.396220049	10.0.1.1	10.0.2.2	63	·······AP···	18
+12	1795080100.396251589	10.0.2.2	10.0.1.1	64	·······A····	0
+13	1795080100.396257922	10.0.2.2	10.0.1.1	63	·······A····	0
+14	1795080100.396258755	10.0.2.2	10.0.1.1	63	·······A····	0
+15	1795080102.354625394	10.0.1.1	10.0.2.2	64	·······AP···	16
+16	1795080102.354657100	10.0.1.1	10.0.2.2	64	·······AP···	16
+17	1795080102.374985211	10.0.1.1	10.0.2.2	63	·······AP···	16
+18	1795080102.375089163	10.0.2.2	10.0.1.1	64	·······A····	0
+19	1795080102.375111287	10.0.2.2	10.0.1.1	63	·······A····	0
+20	1795080102.375115787	10.0.2.2	10.0.1.1	63	·······A····	0
+22	1795080104.366052350	10.0.1.1	10.0.2.2	64	·······AP···	22
+23	1795080104.366178718	10.0.1.1	10.0.2.2	64	·······AP···	22
+24	1795080104.390683719	10.0.1.1	10.0.2.2	63	·······AP···	22
+25	1795080104.390771548	10.0.2.2	10.0.1.1	64	·······A····	0
+26	1795080104.390790671	10.0.2.2	10.0.1.1	63	·······A····	0
+27	1795080104.390795421	10.0.2.2	10.0.1.1	63	·······A····	0
+31	1795080106.375664116	10.0.1.1	10.0.2.2	64	·······AP···	31
+32	1795080106.375702156	10.0.1.1	10.0.2.2	64	·······AP···	31
+33	1795080106.397349192	10.0.1.1	10.0.2.2	63	·······AP···	31
+34	1795080106.397492934	10.0.2.2	10.0.1.1	64	·······A····	0
+35	1795080106.397534973	10.0.2.2	10.0.1.1	63	·······A····	0
+36	1795080106.397541056	10.0.2.2	10.0.1.1	63	·······A····	0
+39	1795080108.389072544	10.0.1.1	10.0.2.2	64	·······AP···	33
+40	1795080108.389167747	10.0.1.1	10.0.2.2	64	·······AP···	33
+41	1795080108.409393530	10.0.1.1	10.0.2.2	63	·······AP···	33
+42	1795080108.409461152	10.0.2.2	10.0.1.1	64	·······A····	0
+43	1795080108.409481275	10.0.2.2	10.0.1.1	63	·······A····	0
+44	1795080108.409486733	10.0.2.2	10.0.1.1	63	·······A····	0
+45	1795080110.403984386	10.0.1.1	10.0.2.2	64	·······A···F	0
+46	1795080110.404181555	10.0.1.1	10.0.2.2	64	·······A···F	0
+
+===== Step 45: Wireshark step – Analyze > Expert Information (tshark -z expert)
+[Terminal 4]
+$ tshark -r /tmp/merged.pcap -q -z expert 2>/dev/null | head -40
+
+Notes (46)
+=============
+   Frequency      Group           Protocol  Summary
+          18   Sequence                TCP  This frame is a (suspected) retransmission
+           9   Sequence                TCP  Ambiguous ACK following Karn's definition
+           7   Sequence                TCP  Duplicate ACK (#1)
+           6   Sequence                TCP  Duplicate ACK (#2)
+           3   Sequence                TCP  This frame initiates the connection closing
+           3   Sequence                TCP  This frame undergoes the connection closing
+
+Chats (12)
+=============
+   Frequency      Group           Protocol  Summary
+           3   Sequence                TCP  Connection establish request (SYN): server port 1234
+           3   Sequence                TCP  Connection establish acknowledge (SYN+ACK): server port 1234
+           6   Sequence                TCP  Connection finish (FIN)
+
+===== Step 46: Clean up – delete the three namespaces
+[Terminal 4]
+$ sudo ip netns del host1; sudo ip netns del router; sudo ip netns del host2
+done
+
+===== Step 47: Clean up – verify (must return blank)
+[Terminal 4]
+$ sudo ip netns list
+
+
